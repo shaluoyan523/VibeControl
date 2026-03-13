@@ -1,0 +1,113 @@
+{
+  "name": "vibe-control",
+  "displayName": "Vibe Control",
+  "description": "Vibe Coding session management — companion for Claude Code",
+  "version": "0.0.1",
+  "publisher": "vibe-control",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": ["AI", "Chat"],
+  "activationEvents": ["onStartupFinished"],
+  "icon": "resources/claude-logo.png",
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vibe-control.newSession",
+        "title": "Vibe Control: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "vibe-control.openSession",
+        "title": "Vibe Control: Open Session"
+      },
+      {
+        "command": "vibe-control.deleteSession",
+        "title": "Vibe Control: Delete Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "vibe-control.renameSession",
+        "title": "Vibe Control: Rename Session"
+      },
+      {
+        "command": "vibe-control.refreshSessions",
+        "title": "Vibe Control: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "vibe-control.newSessionInProject",
+        "title": "New Session Here",
+        "icon": "$(add)"
+      },
+      {
+        "command": "vibe-control.switchWorkspace",
+        "title": "Switch Workspace",
+        "icon": "$(folder-active)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vibe-control-sidebar",
+          "title": "Vibe Control",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "vibe-control-sidebar": [
+        {
+          "id": "vibeSessionsList",
+          "name": "Sessions",
+          "type": "tree"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "vibe-control.newSession", "when": "view == vibeSessionsList", "group": "navigation" },
+        { "command": "vibe-control.refreshSessions", "when": "view == vibeSessionsList", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "vibe-control.switchWorkspace", "when": "view == vibeSessionsList && viewItem == project", "group": "navigation" },
+        { "command": "vibe-control.newSessionInProject", "when": "view == vibeSessionsList && viewItem == project" },
+        { "command": "vibe-control.switchWorkspace", "when": "view == vibeSessionsList && viewItem == session", "group": "navigation" },
+        { "command": "vibe-control.deleteSession", "when": "view == vibeSessionsList && viewItem == session", "group": "inline" },
+        { "command": "vibe-control.renameSession", "when": "view == vibeSessionsList && viewItem == session" }
+      ]
+    },
+    "configuration": {
+      "title": "Vibe Control",
+      "properties": {
+        "vibe-control.httpPort": {
+          "type": "number",
+          "default": 23816,
+          "description": "Port for the Vibe Control HTTP API server"
+        },
+        "vibe-control.enableHttpServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the HTTP API server for external tool integration"
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false }
+  },
+  "scripts": {
+    "compile": "webpack --mode production",
+    "watch": "webpack --mode development --watch"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.94.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0",
+    "webpack": "^5.90.0",
+    "webpack-cli": "^5.1.0",
+    "ts-loader": "^9.5.0",
+    "copy-webpack-plugin": "^12.0.0"
+  }
+}
