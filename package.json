@@ -2,7 +2,7 @@
   "name": "vibe-control",
   "displayName": "Vibe Control",
   "description": "Vibe Coding session management — companion for Claude Code",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "shaluoyan523",
   "license": "MIT",
   "repository": {
@@ -17,7 +17,7 @@
     "Anthropic.claude-code"
   ],
   "activationEvents": ["onStartupFinished"],
-  "icon": "resources/claude-logo.png",
+  "icon": "resources/icon.png",
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
