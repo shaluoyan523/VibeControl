@@ -3,7 +3,12 @@
   "displayName": "Vibe Control",
   "description": "Vibe Coding session management — companion for Claude Code",
   "version": "0.0.1",
-  "publisher": "vibe-control",
+  "publisher": "shaluoyan523",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shaluoyan523/VibeControl"
+  },
   "engines": {
     "vscode": "^1.94.0"
   },
