@@ -45,6 +45,10 @@
         "command": "vibe-control.switchWorkspace",
         "title": "Switch Workspace",
         "icon": "$(folder-active)"
+      },
+      {
+        "command": "vibe-control.openSessionNewTab",
+        "title": "Open in New Tab"
       }
     ],
     "viewsContainers": {
@@ -74,6 +78,7 @@
         { "command": "vibe-control.switchWorkspace", "when": "view == vibeSessionsList && viewItem == project", "group": "navigation" },
         { "command": "vibe-control.newSessionInProject", "when": "view == vibeSessionsList && viewItem == project" },
         { "command": "vibe-control.switchWorkspace", "when": "view == vibeSessionsList && viewItem == session", "group": "navigation" },
+        { "command": "vibe-control.openSessionNewTab", "when": "view == vibeSessionsList && viewItem == session" },
         { "command": "vibe-control.deleteSession", "when": "view == vibeSessionsList && viewItem == session", "group": "inline" },
         { "command": "vibe-control.renameSession", "when": "view == vibeSessionsList && viewItem == session" }
       ]

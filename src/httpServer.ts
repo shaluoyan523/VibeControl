@@ -6,10 +6,21 @@ import * as crypto from 'crypto';
 import { SessionManager } from './sessionManager';
 import { ProcessManager } from './processManager';
 
+/** API-created session that hasn't been used with CLI yet */
+interface PendingSession {
+  id: string;
+  name: string;
+  projectPath: string;
+  model: string;
+  createdAt: number;
+}
+
 export class HttpServer {
   private server: http.Server | null = null;
   private actualPort: number = 0;
   private portFilePath: string;
+  /** Sessions created via API that don't yet have a CLI-generated .jsonl */
+  private pendingSessions = new Map<string, PendingSession>();
 
   constructor(
     private sessionManager: SessionManager,
@@ -36,7 +47,6 @@ export class HttpServer {
         srv.listen(port, '127.0.0.1', () => {
           this.server = srv;
           this.actualPort = port;
-          // Write port file for discovery
           try {
             const dir = path.dirname(this.portFilePath);
             if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
@@ -51,7 +61,6 @@ export class HttpServer {
 
   stop(): Promise<void> {
     return new Promise((resolve) => {
-      // Clean up port file
       try { fs.unlinkSync(this.portFilePath); } catch { /* ignore */ }
       if (this.server) {
         this.server.close(() => resolve());
@@ -62,7 +71,6 @@ export class HttpServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // CORS preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, corsHeaders());
       res.end();
@@ -72,7 +80,6 @@ export class HttpServer {
     try {
       const url = new URL(req.url || '/', `http://localhost`);
       const segments = url.pathname.split('/').filter(Boolean);
-      // segments: ['api', 'conversations', ':id', 'action']
 
       if (segments[0] !== 'api' || segments[1] !== 'conversations') {
         sendJson(res, 404, { error: 'Not found' });
@@ -80,8 +87,8 @@ export class HttpServer {
       }
 
       const method = req.method || 'GET';
-      const id = segments[2]; // conversation ID (may be undefined)
-      const action = segments[3]; // sub-action (may be undefined)
+      const id = segments[2];
+      const action = segments[3];
 
       // GET /api/conversations
       if (method === 'GET' && segments.length === 2) {
@@ -93,7 +100,6 @@ export class HttpServer {
         return await this.handleCreate(req, res);
       }
 
-      // Need an ID for all remaining routes
       if (!id) {
         sendJson(res, 400, { error: 'Missing conversation ID' });
         return;
@@ -114,12 +120,12 @@ export class HttpServer {
         return this.handleStatus(id, res);
       }
 
-      // GET /api/conversations/:id/stream — subscribe to SSE without sending a message
+      // GET /api/conversations/:id/stream
       if (method === 'GET' && action === 'stream') {
         return this.handleStream(id, res);
       }
 
-      // GET /api/conversations/:id/permissions — list pending permissions
+      // GET /api/conversations/:id/permissions
       if (method === 'GET' && action === 'permissions') {
         return this.handleListPermissions(id, res);
       }
@@ -164,7 +170,7 @@ export class HttpServer {
       sessions = sessions.filter(s => s.cwd === projectPath);
     }
 
-    sendJson(res, 200, sessions.map(s => ({
+    const result = sessions.map(s => ({
       id: s.sessionId,
       name: s.customTitle || s.summary,
       projectPath: s.cwd,
@@ -172,11 +178,44 @@ export class HttpServer {
       fileSize: s.fileSize,
       gitBranch: s.gitBranch,
       status: this.processManager.getStatus(s.sessionId),
-    })));
+    }));
+
+    // Include pending API-created sessions that haven't been used yet
+    for (const [, pending] of this.pendingSessions) {
+      if (projectPath && pending.projectPath !== projectPath) { continue; }
+      // Skip if a real session with this ID already exists (CLI created it)
+      if (result.some(r => r.id === pending.id)) { continue; }
+      result.push({
+        id: pending.id,
+        name: pending.name,
+        projectPath: pending.projectPath,
+        lastModified: pending.createdAt,
+        fileSize: 0,
+        gitBranch: undefined as any,
+        status: this.processManager.getStatus(pending.id),
+      });
+    }
+
+    sendJson(res, 200, result);
   }
 
   /** GET /api/conversations/:id */
   private handleGet(id: string, res: http.ServerResponse): void {
+    // Check pending sessions first
+    const pending = this.pendingSessions.get(id);
+    if (pending) {
+      sendJson(res, 200, {
+        id: pending.id,
+        name: pending.name,
+        projectPath: pending.projectPath,
+        model: pending.model,
+        lastModified: pending.createdAt,
+        status: this.processManager.getStatus(id),
+        messages: [],
+      });
+      return;
+    }
+
     const session = this.sessionManager.getSession(id);
     if (!session) {
       sendJson(res, 404, { error: 'Conversation not found' });
@@ -196,7 +235,12 @@ export class HttpServer {
     });
   }
 
-  /** POST /api/conversations {name, projectPath, model} */
+  /**
+   * POST /api/conversations {name, projectPath, model}
+   *
+   * Does NOT create a .jsonl file — that's the CLI's job.
+   * We store metadata in-memory until the first message triggers the CLI.
+   */
   private async handleCreate(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const body = await readBody(req);
     const data = JSON.parse(body);
@@ -209,31 +253,18 @@ export class HttpServer {
 
     const sessionId = crypto.randomUUID();
 
-    // Create the session .jsonl file in the correct project directory
-    const dirName = this.pathToDirName(projectPath);
-    const projectDir = path.join(this.sessionManager.projectsDir, dirName);
-    if (!fs.existsSync(projectDir)) {
-      fs.mkdirSync(projectDir, { recursive: true });
-    }
-
-    const filePath = path.join(projectDir, `${sessionId}.jsonl`);
-    const initLine = JSON.stringify({
-      type: 'queue-operation',
-      sessionId,
+    // Store in-memory only — no .jsonl created
+    this.pendingSessions.set(sessionId, {
+      id: sessionId,
+      name: name || sessionId.slice(0, 8),
+      projectPath,
+      model: model || 'sonnet',
+      createdAt: Date.now(),
     });
-    fs.writeFileSync(filePath, initLine + '\n');
 
-    // Write custom title if name provided
-    if (name) {
-      this.sessionManager.renameSession(sessionId, name);
-    }
-
-    // Store model preference
     if (model) {
       this.processManager.setModel(sessionId, model);
     }
-
-    this.sessionManager.refresh();
 
     sendJson(res, 201, {
       id: sessionId,
@@ -246,12 +277,16 @@ export class HttpServer {
 
   /** DELETE /api/conversations/:id */
   private handleDelete(id: string, res: http.ServerResponse): void {
+    // Remove from pending if it was API-created
+    this.pendingSessions.delete(id);
+
     this.processManager.stopProcess(id);
     if (this.sessionManager.deleteSession(id)) {
       this.sessionManager.refresh();
       sendJson(res, 200, { success: true });
     } else {
-      sendJson(res, 404, { error: 'Conversation not found' });
+      // Even if no .jsonl existed, the pending session was removed
+      sendJson(res, 200, { success: true });
     }
   }
 
@@ -262,7 +297,22 @@ export class HttpServer {
       sendJson(res, 400, { error: 'name is required' });
       return;
     }
-    if (this.sessionManager.renameSession(id, name)) {
+
+    // Update pending session name if it's API-created
+    const pending = this.pendingSessions.get(id);
+    if (pending) {
+      pending.name = name;
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
+    // Try renaming the real session .jsonl
+    // Also try renaming via CLI sessionId if there's a mapping
+    const cliId = this.processManager.getCliSessionId(id);
+    const renamed = this.sessionManager.renameSession(id, name)
+      || (cliId ? this.sessionManager.renameSession(cliId, name) : false);
+
+    if (renamed) {
       this.sessionManager.refresh();
       sendJson(res, 200, { success: true });
     } else {
@@ -278,10 +328,37 @@ export class HttpServer {
       return;
     }
 
-    // Look up session for cwd
+    // Determine cwd: from pending session, real session, or fallback
+    const pending = this.pendingSessions.get(id);
     const session = this.sessionManager.getSession(id);
-    const cwd = session?.cwd || process.cwd();
-    const model = this.processManager.getModel(id) || 'sonnet';
+    const cwd = pending?.projectPath || session?.cwd || process.cwd();
+    const model = this.processManager.getModel(id) || pending?.model || 'sonnet';
+
+    // Once the first message is sent, promote from pending to active
+    if (pending) {
+      // Apply the custom name after CLI creates its session
+      const pendingName = pending.name;
+      // Keep a reference so we can apply the title later
+      const checkAndApplyTitle = () => {
+        const cliId = this.processManager.getCliSessionId(id);
+        if (cliId && pendingName) {
+          this.sessionManager.renameSession(cliId, pendingName);
+          this.sessionManager.refresh();
+          this.pendingSessions.delete(id);
+          return true;
+        }
+        return false;
+      };
+
+      // Poll briefly for CLI to report its sessionId
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        if (checkAndApplyTitle() || attempts > 30) {
+          clearInterval(interval);
+        }
+      }, 500);
+    }
 
     this.processManager.sendMessage(id, message, model, cwd, res);
   }
@@ -308,6 +385,11 @@ export class HttpServer {
       return;
     }
     this.processManager.setModel(id, model);
+
+    // Also update pending session
+    const pending = this.pendingSessions.get(id);
+    if (pending) { pending.model = model; }
+
     sendJson(res, 200, { success: true, model });
   }
 
@@ -318,7 +400,7 @@ export class HttpServer {
     }
   }
 
-  /** GET /api/conversations/:id/permissions — list pending permission requests */
+  /** GET /api/conversations/:id/permissions */
   private handleListPermissions(id: string, res: http.ServerResponse): void {
     const perms = this.processManager.getPendingPermissions(id);
     sendJson(res, 200, { permissions: perms });
@@ -338,21 +420,13 @@ export class HttpServer {
     }
   }
 
-  /** POST /api/conversations/:id/interrupt — send SIGINT */
+  /** POST /api/conversations/:id/interrupt */
   private handleInterrupt(id: string, res: http.ServerResponse): void {
     if (this.processManager.interruptProcess(id)) {
       sendJson(res, 200, { success: true });
     } else {
       sendJson(res, 404, { error: 'No running process for this conversation' });
     }
-  }
-
-  /** Convert an absolute path to Claude's project directory name format */
-  private pathToDirName(absPath: string): string {
-    // Claude Code uses: path.replace(/\//g, '-').replace(/^-/, '')... but actually
-    // the directory names look like: -home-dataset-local-data1-vibe-control
-    // which is just the path with / replaced by - (keeping leading -)
-    return absPath.replace(/\//g, '-');
   }
 
   dispose(): void {

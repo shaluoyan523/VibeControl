@@ -170,7 +170,9 @@ export class SessionManager {
       const head = content.slice(0, 4096);
       const cwd = this.extractField(head, 'cwd') || undefined;
       const tail = this.readTail(content);
-      const customTitle = this.extractField(tail, 'customTitle') || undefined;
+      // customTitle may not be in the tail if the file grew — search the whole file
+      // for the last occurrence so user renames are never lost
+      const customTitle = this.extractLastField(content, 'customTitle') || undefined;
       const firstPrompt = this.extractFirstPrompt(content) || undefined;
       const summary = customTitle
         || this.extractField(tail, 'lastPrompt')
@@ -199,6 +201,17 @@ export class SessionManager {
     const pattern = new RegExp(`"${field}"\\s*:\\s*"([^"]*?)"`);
     const match = text.match(pattern);
     return match ? match[1] : null;
+  }
+
+  /** Find the last occurrence of a field in the entire file content */
+  private extractLastField(text: string, field: string): string | null {
+    const pattern = new RegExp(`"${field}"\\s*:\\s*"([^"]*?)"`, 'g');
+    let last: string | null = null;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      last = match[1];
+    }
+    return last;
   }
 
   private extractFirstPrompt(content: string): string | null {

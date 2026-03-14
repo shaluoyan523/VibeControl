@@ -13,7 +13,8 @@ export interface PendingPermission {
 }
 
 interface ProcessInfo {
-  sessionId: string;
+  sessionId: string;       // API-facing session ID (may differ from CLI's)
+  cliSessionId?: string;   // Real session ID assigned by the CLI
   process: child_process.ChildProcess;
   status: 'running' | 'idle' | 'error';
   model: string;
@@ -28,6 +29,8 @@ export class ProcessManager {
   private processes = new Map<string, ProcessInfo>();
   private cliPath: string;
   private models = new Map<string, string>();
+  /** Maps API sessionId → CLI's real sessionId (populated after first message) */
+  private cliSessionMap = new Map<string, string>();
 
   constructor(extensionPath: string) {
     const localCli = path.join(extensionPath, 'resources', 'claude-code', 'cli.js');
@@ -44,7 +47,16 @@ export class ProcessManager {
   getStatus(sessionId: string): ProcessStatus {
     const info = this.processes.get(sessionId);
     if (!info) { return 'not_started'; }
-    return info.status;
+    // Don't persist error/idle status from dead processes — treat them as not_started
+    if (info.status !== 'running') {
+      return 'not_started';
+    }
+    return 'running';
+  }
+
+  /** Get the CLI's real session ID for an API session ID (if known) */
+  getCliSessionId(apiSessionId: string): string | undefined {
+    return this.cliSessionMap.get(apiSessionId);
   }
 
   /** Get all pending permission requests for a session */
@@ -75,7 +87,6 @@ export class ProcessManager {
       info.process.stdin?.write(response + '\n');
       info.pendingPermissions.delete(requestId);
 
-      // Notify SSE clients
       const sseData = `event: permission_resolved\ndata: ${JSON.stringify({ requestId, allowed: allow })}\n\n`;
       for (const client of info.sseClients) {
         client.write(sseData);
@@ -97,7 +108,6 @@ export class ProcessManager {
     cwd: string,
     res: http.ServerResponse,
   ): void {
-    // Set up SSE headers
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -107,19 +117,27 @@ export class ProcessManager {
 
     let info = this.processes.get(sessionId);
 
-    // If no process or previous one exited, spawn a new one
+    // If no process or previous one exited/errored, clean up and spawn fresh
     if (!info || info.status !== 'running') {
-      const isResume = info !== undefined || this.sessionFileExists(sessionId);
-      info = this.spawnProcess(sessionId, model, cwd, isResume);
+      if (info) {
+        // Clean up stale error state — don't let old errors block new attempts
+        this.processes.delete(sessionId);
+      }
+      const cliId = this.cliSessionMap.get(sessionId);
+      const isResume = !!cliId || this.realSessionFileExists(sessionId);
+      const resumeId = cliId || sessionId;
+      try {
+        info = this.spawnProcess(sessionId, model, cwd, isResume, resumeId);
+      } catch (e: any) {
+        res.write(`event: error\ndata: ${JSON.stringify({ error: `Failed to spawn: ${e.message}` })}\n\n`);
+        res.write(`event: done\ndata: ${JSON.stringify({ code: -1, error: e.message })}\n\n`);
+        res.end();
+        return;
+      }
     }
 
-    // Register SSE client
     info.sseClients.add(res);
-
-    // Clean up on client disconnect
-    res.on('close', () => {
-      info!.sseClients.delete(res);
-    });
+    res.on('close', () => { info!.sseClients.delete(res); });
 
     // Write message to CLI stdin
     const inputMsg = JSON.stringify({
@@ -152,7 +170,6 @@ export class ProcessManager {
     info.sseClients.add(res);
     res.on('close', () => { info.sseClients.delete(res); });
 
-    // Send current pending permissions as initial events
     for (const perm of info.pendingPermissions.values()) {
       res.write(`event: permission_request\ndata: ${JSON.stringify(perm)}\n\n`);
     }
@@ -165,11 +182,14 @@ export class ProcessManager {
     model: string,
     cwd: string,
     isResume: boolean,
+    resumeId?: string,
   ): ProcessInfo {
     const effectiveModel = this.models.get(sessionId) || model || 'sonnet';
 
     const args = [
       this.cliPath,
+      '--print',
+      '--verbose',
       '--input-format', 'stream-json',
       '--output-format', 'stream-json',
       '--model', effectiveModel,
@@ -177,8 +197,8 @@ export class ProcessManager {
       '--permission-prompt-tool', 'stdio',
     ];
 
-    if (isResume) {
-      args.push('--resume', sessionId);
+    if (isResume && resumeId) {
+      args.push('--resume', resumeId);
     }
 
     const proc = child_process.spawn(process.execPath, args, {
@@ -219,13 +239,11 @@ export class ProcessManager {
       }
     });
 
-    // Collect stderr
     let stderrBuf = '';
     proc.stderr?.on('data', (chunk: Buffer) => {
       stderrBuf += chunk.toString();
     });
 
-    // Handle exit
     proc.on('exit', (code) => {
       if (code !== 0) {
         info.status = 'error';
@@ -260,6 +278,12 @@ export class ProcessManager {
 
   /** Handle a parsed JSON message from CLI stdout */
   private handleCliMessage(info: ProcessInfo, msg: any): void {
+    // Capture CLI's real session ID from any message that contains it
+    if (msg.session_id && !info.cliSessionId) {
+      info.cliSessionId = msg.session_id;
+      this.cliSessionMap.set(info.sessionId, msg.session_id);
+    }
+
     // Detect control_request (permission prompts)
     if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
       const perm: PendingPermission = {
@@ -271,7 +295,6 @@ export class ProcessManager {
       };
       info.pendingPermissions.set(msg.request_id, perm);
 
-      // Push as SSE event
       const sseData = `event: permission_request\ndata: ${JSON.stringify(perm)}\n\n`;
       for (const client of info.sseClients) {
         client.write(sseData);
@@ -314,7 +337,11 @@ export class ProcessManager {
     return true;
   }
 
-  private sessionFileExists(sessionId: string): boolean {
+  /**
+   * Check if a REAL session .jsonl file exists (one created by the CLI, with actual messages).
+   * This excludes files we might have pre-created via the API.
+   */
+  private realSessionFileExists(sessionId: string): boolean {
     const fs = require('fs');
     const os = require('os');
     const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -322,8 +349,14 @@ export class ProcessManager {
     if (!fs.existsSync(projectsDir)) { return false; }
     const dirs = fs.readdirSync(projectsDir, { withFileTypes: true }).filter((d: any) => d.isDirectory());
     for (const dir of dirs) {
-      if (fs.existsSync(path.join(projectsDir, dir.name, `${sessionId}.jsonl`))) {
-        return true;
+      const filePath = path.join(projectsDir, dir.name, `${sessionId}.jsonl`);
+      if (fs.existsSync(filePath)) {
+        // Check if the file has actual user messages (not just our API-created stub)
+        const content = fs.readFileSync(filePath, 'utf-8');
+        if (content.includes('"type":"user"') || content.includes('"type": "user"')) {
+          return true;
+        }
+        return false;
       }
     }
     return false;

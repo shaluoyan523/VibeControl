@@ -1,6 +1,6 @@
 # Vibe Control
 
-**VSCode extension for managing Claude Code sessions across multiple projects — without reloading the window.**
+**A VSCode plugin that allows you to use Claude Code like you would ChatGPT.**
 
 Vibe Control adds a sidebar session browser, cross-project workspace switching, and an HTTP API that lets external tools (scripts, other editors, automation) drive Claude Code programmatically.
 
@@ -116,6 +116,10 @@ src/
 
 - VSCode ≥ 1.94
 - [Claude Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) installed
+
+## Acknowledgments
+
+This project was built entirely with the help of [Claude Code](https://docs.anthropic.com/en/docs/claude-code) by Anthropic. From architecture design to implementation, Claude Code served as an invaluable pair-programming partner throughout the development process.
 
 ## License
 

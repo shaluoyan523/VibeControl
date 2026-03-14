@@ -12,26 +12,71 @@ function patchOriginalExtension(): boolean {
   const claudeExt = vscode.extensions.getExtension('Anthropic.claude-code');
   if (!claudeExt) { return false; }
 
+  let changed = false;
   const extJsPath = path.join(claudeExt.extensionPath, 'extension.js');
   if (!fs.existsSync(extJsPath)) { return false; }
 
-  const content = fs.readFileSync(extJsPath, 'utf-8');
-  if (content.includes('__vibeControlCwd')) { return false; } // already patched
+  let content = fs.readFileSync(extJsPath, 'utf-8');
 
-  const pattern = /(\w+)\.realpathSync\((\w+)\[0\]\|\|(\w+)\.homedir\(\)\)\.normalize\("NFC"\)/g;
-  const patched = content.replace(pattern, (match) => `global.__vibeControlCwd||${match}`);
-
-  if (patched === content) { return false; }
-
-  try {
-    fs.writeFileSync(extJsPath, patched, 'utf-8');
-    return true;
-  } catch {
-    return false;
+  // Patch 1: CWD override
+  if (!content.includes('__vibeControlCwd')) {
+    const pattern = /(\w+)\.realpathSync\((\w+)\[0\]\|\|(\w+)\.homedir\(\)\)\.normalize\("NFC"\)/g;
+    const patched = content.replace(pattern, (match) => `global.__vibeControlCwd||${match}`);
+    if (patched !== content) { content = patched; changed = true; }
   }
+
+  // Patch 2: CSS injection — hide "New session" + "Past Conversations" buttons
+  const cssMarker = '__vibeControlCSS';
+  if (!content.includes(cssMarker)) {
+    const templateStart = content.indexOf('return`<!DOCTYPE html>');
+    if (templateStart >= 0) {
+      const styleEnd = content.indexOf('</style>', templateStart);
+      if (styleEnd >= 0) {
+        const injectionPoint = styleEnd + '</style>'.length;
+        const hideCSS = `\n        <style>/* ${cssMarker} */\n`
+          + '          [class*="sessionsButton_"] { display: none !important; }\n'
+          + '          [aria-label="New session"] { display: none !important; }\n'
+          + '        </style>';
+        content = content.substring(0, injectionPoint) + hideCSS + content.substring(injectionPoint);
+        changed = true;
+      }
+    }
+  }
+
+  // Patch 3: Disable auto-rename of tab title (summary → title)
+  const renameMarker = '__vibeControlNoRename';
+  if (!content.includes(renameMarker)) {
+    const renameTarget = '.panelTab.title=z.request.title';
+    const idx = content.indexOf(renameTarget);
+    if (idx >= 0) {
+      // Replace with a no-op guarded by marker comment
+      content = content.substring(0, idx) + `.panelTab.title/*${renameMarker}*/=this.panelTab.title` + content.substring(idx + renameTarget.length);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    try { fs.writeFileSync(extJsPath, content, 'utf-8'); } catch { return false; }
+  }
+  return changed;
 }
 
-async function openSession(sessionId?: string, cwd?: string): Promise<void> {
+/** Close all Claude Code webview tabs and return their ViewColumn. */
+async function closeClaudePanels(): Promise<vscode.ViewColumn | undefined> {
+  let column: vscode.ViewColumn | undefined;
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      if (tab.input instanceof vscode.TabInputWebview
+        && (tab.input as any).viewType?.includes('claudeVSCodePanel')) {
+        column = group.viewColumn;
+        await vscode.window.tabGroups.close(tab);
+      }
+    }
+  }
+  return column;
+}
+
+async function openSession(sessionId?: string, cwd?: string, newTab = false): Promise<void> {
   if (cwd) {
     try {
       g.__vibeControlCwd = fs.realpathSync(cwd).normalize('NFC');
@@ -40,7 +85,13 @@ async function openSession(sessionId?: string, cwd?: string): Promise<void> {
     }
   }
   try {
-    await vscode.commands.executeCommand('claude-vscode.editor.open', sessionId);
+    if (!newTab) {
+      // Single-tab mode: close existing panels first, reopen in same column
+      const col = await closeClaudePanels();
+      await vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, col);
+    } else {
+      await vscode.commands.executeCommand('claude-vscode.editor.open', sessionId);
+    }
   } finally {
     g.__vibeControlCwd = undefined;
   }
@@ -68,17 +119,15 @@ export async function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(treeView);
 
-  // New Session: prompt for name, then open
+  // New Session: prompt for name, then open (always new tab)
   context.subscriptions.push(
     vscode.commands.registerCommand('vibe-control.newSession', async () => {
-      // 1. Ask for session name
       const name = await vscode.window.showInputBox({
         prompt: 'Session name',
         placeHolder: 'e.g. Feature: Auth Refactor',
       });
       if (!name) { return; }
 
-      // 2. Ask for project path
       const choices: vscode.QuickPickItem[] = [
         { label: '$(folder) Current Workspace', description: 'Use current workspace path' },
         { label: '$(folder-opened) Choose Folder...', description: 'Select a different project folder' },
@@ -101,16 +150,10 @@ export async function activate(context: vscode.ExtensionContext) {
         cwd = uri[0].fsPath;
       }
 
-      // 3. Open the new Claude session
-      if (cwd) { g.__vibeControlCwd = cwd; }
-      try {
-        await vscode.commands.executeCommand('claude-vscode.editor.open');
-      } finally {
-        g.__vibeControlCwd = undefined;
-      }
+      // Open new session (always new tab for creation)
+      await openSession(undefined, cwd, true);
 
-      // 4. Wait for .jsonl to appear, then write the custom title
-      //    The session file is created almost immediately by Claude Code
+      // Wait for .jsonl to appear, then write the custom title
       const targetDir = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (targetDir) {
         waitForNewSessionAndRename(sessionManager, targetDir, name);
@@ -118,11 +161,20 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Open/Resume Session
+  // Open/Resume Session (single-tab by default)
   context.subscriptions.push(
     vscode.commands.registerCommand('vibe-control.openSession', async (sessionId: string, cwd?: string) => {
       if (!sessionId) { return; }
       await openSession(sessionId, cwd);
+    }),
+  );
+
+  // Open Session in New Tab (right-click)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('vibe-control.openSessionNewTab', async (item: any) => {
+      const session = item?.session;
+      if (!session?.sessionId) { return; }
+      await openSession(session.sessionId, session.cwd, true);
     }),
   );
 
@@ -184,20 +236,12 @@ export async function activate(context: vscode.ExtensionContext) {
       });
       if (!name) { return; }
 
-      if (cwd) { g.__vibeControlCwd = cwd; }
-      try {
-        await vscode.commands.executeCommand('claude-vscode.editor.open');
-      } finally {
-        g.__vibeControlCwd = undefined;
-      }
-
+      await openSession(undefined, cwd, true);
       waitForNewSessionAndRename(sessionManager, cwd, name);
     }),
   );
 
   // Switch Workspace — multi-root with anchor folder (no reload)
-  // The anchor folder (extension install path) always stays at index 0.
-  // We add/remove project folders at index 1+ to switch context without reloading.
   context.subscriptions.push(
     vscode.commands.registerCommand('vibe-control.switchWorkspace', async (item: any) => {
       let targetPath: string | undefined;
@@ -215,32 +259,27 @@ export async function activate(context: vscode.ExtensionContext) {
       const targetUri = vscode.Uri.file(targetPath);
       const folders = vscode.workspace.workspaceFolders || [];
 
-      // Already present → no-op
       if (folders.some(f => f.uri.fsPath === targetPath)) {
         vscode.window.showInformationMessage(`"${path.basename(targetPath)}" is already in the workspace.`);
         return;
       }
 
-      // Ensure anchor folder at index 0
       const anchorPath = context.extensionPath;
       const anchorUri = vscode.Uri.file(anchorPath);
       const hasAnchor = folders.length > 0 && folders[0].uri.fsPath === anchorPath;
 
       if (folders.length === 0) {
-        // Empty workspace: add anchor + target
         vscode.workspace.updateWorkspaceFolders(0, 0,
           { uri: anchorUri, name: '🎛 Vibe Control (anchor)' },
           { uri: targetUri },
         );
       } else if (!hasAnchor) {
-        // No anchor yet: insert anchor at 0, replace all others with target
         vscode.workspace.updateWorkspaceFolders(0, folders.length,
           { uri: anchorUri, name: '🎛 Vibe Control (anchor)' },
           { uri: targetUri },
         );
       } else {
-        // Anchor exists at 0: replace everything after it with the new target
-        const removeCount = folders.length - 1; // keep index 0
+        const removeCount = folders.length - 1;
         if (removeCount > 0) {
           vscode.workspace.updateWorkspaceFolders(1, removeCount, { uri: targetUri });
         } else {
@@ -277,7 +316,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
 /**
  * Poll for a newly created .jsonl file in the project dir and write customTitle.
- * Claude Code creates the file within ~1s of opening a new panel.
  */
 function waitForNewSessionAndRename(
   manager: SessionManager,
@@ -286,7 +324,6 @@ function waitForNewSessionAndRename(
 ): void {
   const projectsDir = manager.projectsDir;
 
-  // Get current session IDs before the new one appears
   const existingIds = new Set<string>();
   if (fs.existsSync(projectsDir)) {
     const dirs = fs.readdirSync(projectsDir, { withFileTypes: true }).filter(d => d.isDirectory());
@@ -299,7 +336,7 @@ function waitForNewSessionAndRename(
   let attempts = 0;
   const interval = setInterval(() => {
     attempts++;
-    if (attempts > 30) { clearInterval(interval); return; } // give up after 15s
+    if (attempts > 30) { clearInterval(interval); return; }
 
     if (!fs.existsSync(projectsDir)) { return; }
     const dirs = fs.readdirSync(projectsDir, { withFileTypes: true }).filter(d => d.isDirectory());
@@ -308,7 +345,6 @@ function waitForNewSessionAndRename(
       for (const f of files) {
         const sid = f.slice(0, -6);
         if (!existingIds.has(sid)) {
-          // Found the new session
           manager.renameSession(sid, title);
           manager.refresh();
           clearInterval(interval);
