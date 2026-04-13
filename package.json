@@ -1,8 +1,8 @@
 {
   "name": "vibe-control",
   "displayName": "Vibe Control",
-  "description": "Vibe Coding session management — companion for Claude Code",
-  "version": "0.0.3",
+  "description": "Vibe Coding session management for Claude Code and Codex",
+  "version": "0.0.12",
   "publisher": "shaluoyan523",
   "license": "MIT",
   "repository": {
@@ -12,23 +12,121 @@
   "engines": {
     "vscode": "^1.94.0"
   },
-  "categories": ["AI", "Chat"],
-  "extensionDependencies": [
-    "Anthropic.claude-code"
+  "categories": [
+    "AI",
+    "Chat"
   ],
-  "activationEvents": ["onStartupFinished"],
+  "extensionDependencies": [
+    "Anthropic.claude-code",
+    "openai.chatgpt"
+  ],
+  "activationEvents": [
+    "onView:vibeSessionsList",
+    "onCommand:vibe-control.activateSession",
+    "onCommand:vibe-control.contextOpenSession",
+    "onCommand:vibe-control.contextOpenSessionNewTab",
+    "onCommand:vibe-control.searchSessions",
+    "onCommand:vibe-control.searchWorkspace",
+    "onCommand:vibe-control.showSessionCenter",
+    "onCommand:vibe-control.stopSession",
+    "onCommand:vibe-control.interruptSession",
+    "onCommand:vibe-control.newNote",
+    "onCommand:vibe-control.openNote",
+    "onCommand:vibe-control.copyNotePath",
+    "onCommand:vibe-control.deleteNote",
+    "onCommand:vibe-control.addSelectionToNote",
+    "onCommand:vibe-control.appendSelectionToNote",
+    "onCommand:vibe-control.newSession",
+    "onCommand:vibe-control.openSession",
+    "onCommand:vibe-control.openSessionCliInTerminal",
+    "onCommand:vibe-control.handoffSession",
+    "onCommand:vibe-control.deleteSession",
+    "onCommand:vibe-control.renameSession",
+    "onCommand:vibe-control.refreshSessions",
+    "onCommand:vibe-control.newSessionInProject",
+    "onCommand:vibe-control.copyProjectPath",
+    "onCommand:vibe-control.switchWorkspace",
+    "onCommand:vibe-control.openSessionNewTab"
+  ],
   "icon": "resources/icon.png",
+  "extensionKind": [
+    "workspace"
+  ],
   "main": "./dist/extension.js",
+  "files": [
+    "dist/**",
+    "resources/**",
+    "webview/**",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md",
+    "package.json"
+  ],
   "contributes": {
     "commands": [
+      {
+        "command": "vibe-control.activateSession",
+        "title": "Vibe Control: Activate Session"
+      },
+      {
+        "command": "vibe-control.contextOpenSession",
+        "title": "Open Session"
+      },
+      {
+        "command": "vibe-control.contextOpenSessionNewTab",
+        "title": "Open in New Tab"
+      },
+      {
+        "command": "vibe-control.searchSessions",
+        "title": "Vibe Control: Search Sessions",
+        "icon": "$(search)"
+      },
+      {
+        "command": "vibe-control.searchWorkspace",
+        "title": "Vibe Control: Workspace Search",
+        "icon": "$(search-fuzzy)"
+      },
+      {
+        "command": "vibe-control.showSessionCenter",
+        "title": "Vibe Control: Session Center",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "vibe-control.stopSession",
+        "title": "Vibe Control: Stop Session"
+      },
+      {
+        "command": "vibe-control.interruptSession",
+        "title": "Vibe Control: Interrupt Session"
+      },
       {
         "command": "vibe-control.newSession",
         "title": "Vibe Control: New Session",
         "icon": "$(add)"
       },
       {
+        "command": "vibe-control.newNote",
+        "title": "Vibe Control: New Note",
+        "icon": "$(note)"
+      },
+      {
+        "command": "vibe-control.addSelectionToNote",
+        "title": "Vibe Control: Add Selection To Note",
+        "icon": "$(note-add)"
+      },
+      {
         "command": "vibe-control.openSession",
         "title": "Vibe Control: Open Session"
+      },
+      {
+        "command": "vibe-control.openSessionCliInTerminal",
+        "title": "Vibe Control: Open Session CLI In Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "vibe-control.handoffSession",
+        "title": "Vibe Control: Handoff Session",
+        "icon": "$(export)"
       },
       {
         "command": "vibe-control.deleteSession",
@@ -50,6 +148,11 @@
         "icon": "$(add)"
       },
       {
+        "command": "vibe-control.copyProjectPath",
+        "title": "Copy Folder Path",
+        "icon": "$(copy)"
+      },
+      {
         "command": "vibe-control.switchWorkspace",
         "title": "Switch Workspace",
         "icon": "$(folder-active)"
@@ -57,6 +160,26 @@
       {
         "command": "vibe-control.openSessionNewTab",
         "title": "Open in New Tab"
+      },
+      {
+        "command": "vibe-control.openNote",
+        "title": "Vibe Control: Open Note",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "vibe-control.copyNotePath",
+        "title": "Vibe Control: Copy Note Path",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "vibe-control.deleteNote",
+        "title": "Vibe Control: Delete Note",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "vibe-control.appendSelectionToNote",
+        "title": "Vibe Control: Append Selection To Note",
+        "icon": "$(note-add)"
       }
     ],
     "viewsContainers": {
@@ -79,16 +202,119 @@
     },
     "menus": {
       "view/title": [
-        { "command": "vibe-control.newSession", "when": "view == vibeSessionsList", "group": "navigation" },
-        { "command": "vibe-control.refreshSessions", "when": "view == vibeSessionsList", "group": "navigation" }
+        {
+          "command": "vibe-control.newSession",
+          "when": "view == vibeSessionsList",
+          "group": "navigation"
+        },
+        {
+          "command": "vibe-control.newNote",
+          "when": "view == vibeSessionsList",
+          "group": "navigation"
+        },
+        {
+          "command": "vibe-control.searchSessions",
+          "when": "view == vibeSessionsList",
+          "group": "navigation"
+        },
+        {
+          "command": "vibe-control.searchWorkspace",
+          "when": "view == vibeSessionsList",
+          "group": "navigation"
+        },
+        {
+          "command": "vibe-control.showSessionCenter",
+          "when": "view == vibeSessionsList",
+          "group": "navigation"
+        },
+        {
+          "command": "vibe-control.refreshSessions",
+          "when": "view == vibeSessionsList",
+          "group": "navigation"
+        }
       ],
       "view/item/context": [
-        { "command": "vibe-control.switchWorkspace", "when": "view == vibeSessionsList && viewItem == project", "group": "navigation" },
-        { "command": "vibe-control.newSessionInProject", "when": "view == vibeSessionsList && viewItem == project" },
-        { "command": "vibe-control.switchWorkspace", "when": "view == vibeSessionsList && viewItem == session", "group": "navigation" },
-        { "command": "vibe-control.openSessionNewTab", "when": "view == vibeSessionsList && viewItem == session" },
-        { "command": "vibe-control.deleteSession", "when": "view == vibeSessionsList && viewItem == session", "group": "inline" },
-        { "command": "vibe-control.renameSession", "when": "view == vibeSessionsList && viewItem == session" }
+        {
+          "command": "vibe-control.switchWorkspace",
+          "when": "view == vibeSessionsList && viewItem == project",
+          "group": "navigation"
+        },
+        {
+          "command": "vibe-control.newSessionInProject",
+          "when": "view == vibeSessionsList && viewItem == project"
+        },
+        {
+          "command": "vibe-control.copyProjectPath",
+          "when": "view == vibeSessionsList && viewItem == project"
+        },
+        {
+          "command": "vibe-control.switchWorkspace",
+          "when": "view == vibeSessionsList && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "vibe-control.contextOpenSession",
+          "when": "view == vibeSessionsList && viewItem == session",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vibe-control.contextOpenSessionNewTab",
+          "when": "view == vibeSessionsList && viewItem == session",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vibe-control.openSessionCliInTerminal",
+          "when": "view == vibeSessionsList && viewItem == session",
+          "group": "navigation@3"
+        },
+        {
+          "command": "vibe-control.handoffSession",
+          "when": "view == vibeSessionsList && viewItem == session",
+          "group": "navigation@4"
+        },
+        {
+          "command": "vibe-control.deleteSession",
+          "when": "view == vibeSessionsList && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "vibe-control.renameSession",
+          "when": "view == vibeSessionsList && viewItem == session"
+        },
+        {
+          "command": "vibe-control.openNote",
+          "when": "view == vibeSessionsList && viewItem == note",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vibe-control.appendSelectionToNote",
+          "when": "view == vibeSessionsList && viewItem == note",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vibe-control.copyNotePath",
+          "when": "view == vibeSessionsList && viewItem == note",
+          "group": "navigation@3"
+        },
+        {
+          "command": "vibe-control.deleteNote",
+          "when": "view == vibeSessionsList && viewItem == note",
+          "group": "inline"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "vibe-control.addSelectionToNote",
+          "when": "editorHasSelection",
+          "group": "navigation@1"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "vibe-control.addSelectionToNote",
+          "when": "terminalFocus && terminalTextSelected",
+          "group": "navigation@1"
+        }
       ]
     },
     "configuration": {
@@ -108,19 +334,28 @@
     }
   },
   "capabilities": {
-    "untrustedWorkspaces": { "supported": false }
+    "untrustedWorkspaces": {
+      "supported": false
+    }
   },
   "scripts": {
     "compile": "webpack --mode production",
-    "watch": "webpack --mode development --watch"
+    "watch": "webpack --mode development --watch",
+    "test:unit": "node --import tsx tests/codexSessionIndex.test.ts",
+    "test:gui": "bash ./scripts/run-gui-tests.sh",
+    "test:gui:xvfb": "bash ./scripts/run-gui-tests.sh --xvfb"
   },
   "devDependencies": {
-    "@types/vscode": "^1.94.0",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.0.0",
+    "@types/vscode": "^1.94.0",
+    "@vscode/test-electron": "^2.5.2",
+    "copy-webpack-plugin": "^12.0.0",
+    "mocha": "^11.7.5",
+    "ts-loader": "^9.5.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.5.0",
     "webpack": "^5.90.0",
-    "webpack-cli": "^5.1.0",
-    "ts-loader": "^9.5.0",
-    "copy-webpack-plugin": "^12.0.0"
+    "webpack-cli": "^5.1.0"
   }
 }

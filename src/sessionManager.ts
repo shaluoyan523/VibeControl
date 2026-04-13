@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import * as vscode from 'vscode';
 import { ClaudeSession, ProjectGroup } from './types';
+import { getClaudeConfigDir } from './runtimePaths';
 
 /**
  * Reads Claude Code session data directly from ~/.claude/projects/.
@@ -16,7 +16,7 @@ export class SessionManager {
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    const configDir = getClaudeConfigDir();
     this.projectsDir = path.join(configDir, 'projects');
     this.startWatching();
   }

@@ -1,6 +1,9 @@
 import * as child_process from 'child_process';
 import * as path from 'path';
 import * as http from 'http';
+import { resolveClaudeCliScript } from './claudeCli';
+import { getClaudeProjectsDir } from './runtimePaths';
+import { buildSessionToolEnvironment } from './sessionTooling';
 
 export type ProcessStatus = 'running' | 'idle' | 'error' | 'not_started';
 
@@ -33,19 +36,11 @@ export class ProcessManager {
   private cliSessionMap = new Map<string, string>();
 
   constructor(extensionPath: string) {
-    const localCli = path.join(extensionPath, 'resources', 'claude-code', 'cli.js');
-    const originalCli = path.join(
-      process.env.HOME || '',
-      '.windsurf-server', 'extensions',
-      'anthropic.claude-code-2.1.73-universal',
-      'resources', 'claude-code', 'cli.js',
-    );
-    const fs = require('fs');
-    this.cliPath = fs.existsSync(localCli) ? localCli : originalCli;
+    this.cliPath = resolveClaudeCliScript(extensionPath);
   }
 
   getStatus(sessionId: string): ProcessStatus {
-    const info = this.processes.get(sessionId);
+    const info = this.processes.get(this.resolveProcessKey(sessionId));
     if (!info) { return 'not_started'; }
     // Don't persist error/idle status from dead processes — treat them as not_started
     if (info.status !== 'running') {
@@ -56,19 +51,23 @@ export class ProcessManager {
 
   /** Get the CLI's real session ID for an API session ID (if known) */
   getCliSessionId(apiSessionId: string): string | undefined {
-    return this.cliSessionMap.get(apiSessionId);
+    return this.cliSessionMap.get(this.resolveProcessKey(apiSessionId));
+  }
+
+  getResolvedSessionId(sessionId: string): string | undefined {
+    return this.getCliSessionId(sessionId);
   }
 
   /** Get all pending permission requests for a session */
   getPendingPermissions(sessionId: string): PendingPermission[] {
-    const info = this.processes.get(sessionId);
+    const info = this.processes.get(this.resolveProcessKey(sessionId));
     if (!info) { return []; }
     return Array.from(info.pendingPermissions.values());
   }
 
   /** Respond to a permission request (approve or deny) */
   respondToPermission(sessionId: string, requestId: string, allow: boolean): boolean {
-    const info = this.processes.get(sessionId);
+    const info = this.processes.get(this.resolveProcessKey(sessionId));
     if (!info || !info.pendingPermissions.has(requestId)) { return false; }
 
     const response = JSON.stringify({
@@ -115,19 +114,20 @@ export class ProcessManager {
       'Access-Control-Allow-Origin': '*',
     });
 
-    let info = this.processes.get(sessionId);
+    const processKey = this.resolveProcessKey(sessionId);
+    let info = this.processes.get(processKey);
 
     // If no process or previous one exited/errored, clean up and spawn fresh
     if (!info || info.status !== 'running') {
       if (info) {
         // Clean up stale error state — don't let old errors block new attempts
-        this.processes.delete(sessionId);
+        this.processes.delete(processKey);
       }
-      const cliId = this.cliSessionMap.get(sessionId);
-      const isResume = !!cliId || this.realSessionFileExists(sessionId);
-      const resumeId = cliId || sessionId;
+      const cliId = this.cliSessionMap.get(processKey);
+      const isResume = !!cliId || this.realSessionFileExists(processKey);
+      const resumeId = cliId || processKey;
       try {
-        info = this.spawnProcess(sessionId, model, cwd, isResume, resumeId);
+        info = this.spawnProcess(processKey, model, cwd, isResume, resumeId);
       } catch (e: any) {
         res.write(`event: error\ndata: ${JSON.stringify({ error: `Failed to spawn: ${e.message}` })}\n\n`);
         res.write(`event: done\ndata: ${JSON.stringify({ code: -1, error: e.message })}\n\n`);
@@ -157,7 +157,7 @@ export class ProcessManager {
 
   /** Subscribe to a session's output stream without sending a message */
   subscribe(sessionId: string, res: http.ServerResponse): boolean {
-    const info = this.processes.get(sessionId);
+    const info = this.processes.get(this.resolveProcessKey(sessionId));
     if (!info) { return false; }
 
     res.writeHead(200, {
@@ -204,7 +204,14 @@ export class ProcessManager {
     const proc = child_process.spawn(process.execPath, args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        ...buildSessionToolEnvironment({
+          provider: 'claude',
+          sessionId,
+          cwd,
+        }),
+      },
     });
 
     const info: ProcessInfo = {
@@ -310,7 +317,7 @@ export class ProcessManager {
   }
 
   stopProcess(sessionId: string): boolean {
-    const info = this.processes.get(sessionId);
+    const info = this.processes.get(this.resolveProcessKey(sessionId));
     if (!info || info.status !== 'running') { return false; }
     info.process.kill('SIGTERM');
     info.status = 'idle';
@@ -318,23 +325,31 @@ export class ProcessManager {
   }
 
   setModel(sessionId: string, model: string): void {
-    this.models.set(sessionId, model);
-    const info = this.processes.get(sessionId);
+    const processKey = this.resolveProcessKey(sessionId);
+    this.models.set(processKey, model);
+    const info = this.processes.get(processKey);
     if (info && info.status === 'running') {
       info.model = model;
     }
   }
 
   getModel(sessionId: string): string | undefined {
-    return this.models.get(sessionId);
+    return this.models.get(this.resolveProcessKey(sessionId));
   }
 
   /** Interrupt the CLI (send SIGINT, not SIGTERM — allows graceful stop) */
   interruptProcess(sessionId: string): boolean {
-    const info = this.processes.get(sessionId);
+    const info = this.processes.get(this.resolveProcessKey(sessionId));
     if (!info || info.status !== 'running') { return false; }
     info.process.kill('SIGINT');
     return true;
+  }
+
+  clearSession(sessionId: string): void {
+    const processKey = this.resolveProcessKey(sessionId);
+    this.processes.delete(processKey);
+    this.models.delete(processKey);
+    this.cliSessionMap.delete(processKey);
   }
 
   /**
@@ -343,9 +358,7 @@ export class ProcessManager {
    */
   private realSessionFileExists(sessionId: string): boolean {
     const fs = require('fs');
-    const os = require('os');
-    const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-    const projectsDir = path.join(configDir, 'projects');
+    const projectsDir = getClaudeProjectsDir();
     if (!fs.existsSync(projectsDir)) { return false; }
     const dirs = fs.readdirSync(projectsDir, { withFileTypes: true }).filter((d: any) => d.isDirectory());
     for (const dir of dirs) {
@@ -372,5 +385,19 @@ export class ProcessManager {
       }
     }
     this.processes.clear();
+  }
+
+  private resolveProcessKey(sessionId: string): string {
+    if (this.processes.has(sessionId) || this.models.has(sessionId) || this.cliSessionMap.has(sessionId)) {
+      return sessionId;
+    }
+
+    for (const [apiSessionId, cliSessionId] of this.cliSessionMap) {
+      if (cliSessionId === sessionId) {
+        return apiSessionId;
+      }
+    }
+
+    return sessionId;
   }
 }
